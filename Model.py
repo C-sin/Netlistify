@@ -5,26 +5,27 @@ import main_config
 
 
 def select_gpu_with_most_free_memory():
-    import pynvml
+    pass
+    # import pynvml
 
-    pynvml.nvmlInit()
-    deviceCount = pynvml.nvmlDeviceGetCount()
-    print("#" * 50)
-    print(f"GPU Available: {torch.cuda.is_available()}")
-    print(f"CUDA_VISIBLE_DEVICES: {deviceCount}")
-    memory = 0
-    device = 0
-    for i in range(deviceCount):
-        handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-        print("- DEVICE:", i)
-        print(f"  TOTAL: {int(info.total / 1024**2)}, FREE: {int(info.free / 1024**2)}")
-        if info.free > memory:
-            memory = info.free
-            device = i
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
-    print(f"Using GPU: [{device}]")
-    print("#" * 50)
+    # pynvml.nvmlInit()
+    # deviceCount = pynvml.nvmlDeviceGetCount()
+    # print("#" * 50)
+    # print(f"GPU Available: {torch.cuda.is_available()}")
+    # print(f"CUDA_VISIBLE_DEVICES: {deviceCount}")
+    # memory = 0
+    # device = 0
+    # for i in range(deviceCount):
+    #     handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+    #     info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+    #     print("- DEVICE:", i)
+    #     print(f"  TOTAL: {int(info.total / 1024**2)}, FREE: {int(info.free / 1024**2)}")
+    #     if info.free > memory:
+    #         memory = info.free
+    #         device = i
+    # os.environ["CUDA_VISIBLE_DEVICES"] = str(device)
+    # print(f"Using GPU: [{device}]")
+    # print("#" * 50)
 
 
 rng = np.random.default_rng()
@@ -199,7 +200,7 @@ Datasetbehaviour.reset()
 
 def cudalization(x):
     if isinstance(x, torch.Tensor):
-        return x.cuda(non_blocking=True)
+        return x.cpu()
     else:
         return [cudalization(y) for y in x]
 
@@ -233,16 +234,16 @@ class Model:
         log_freq=1,
         seed=42,
     ):
-        if memory_fraction < 1:
-            torch.cuda.set_per_process_memory_fraction(memory_fraction)
+        # if memory_fraction < 1:
+        #     torch.cuda.set_per_process_memory_fraction(memory_fraction)
         self.name = type(data).__name__
         self.batch_size = batch_size
         self.xtransform = xtransform
         self.ytransform = ytransform
         if self.xtransform is None:
-            self.xtransform = lambda x: torch.tensor(x).float().cuda()
+            self.xtransform = lambda x: torch.tensor(x).float().cpu()
         if self.ytransform is None:
-            self.ytransform = lambda x: torch.tensor(x).float().cuda()
+            self.ytransform = lambda x: torch.tensor(x).float().cpu()
 
         self.cudalize = cudalize
         self.data = data
@@ -415,7 +416,7 @@ class Model:
         backprop_freq = int(backprop_freq)
         previous_epoch = 0
         list_of_files = glob.glob(str(self.log_dir.parent) + "/*")
-        scaler = torch.amp.GradScaler("cuda")
+        scaler = torch.amp.GradScaler("cpu", enabled=False)
         if pretrained_path == "latest":
             if len(list_of_files) == 0:
                 pretrained_path = ""
@@ -430,7 +431,7 @@ class Model:
             if not Path(pretrained_path).exists():
                 print(f"** [Pretrained model not found] - {pretrained_path}")
                 raise FileNotFoundError
-            checkpoint = torch.load(pretrained_path, weights_only=False)
+            checkpoint = torch.load(pretrained_path, weights_only=False, map_location=torch.device('cpu'))
             if isinstance(checkpoint, OrderedDict):
                 model.load_state_dict(checkpoint, strict=True)
                 model = self.parallel(model, device_ids)
@@ -521,7 +522,7 @@ class Model:
                             if not self.cudalize:
                                 data = cudalization(data)
                                 target = cudalization(target)
-                            with torch.autocast("cuda", enabled=self.amp):
+                            with torch.autocast("cpu", enabled=self.amp):
                                 y_hat = self.model_forward(data, target)
                                 self.meta = create_meta(seq, ep, "train")
                                 loss, acc_data = self.loss(
@@ -752,9 +753,10 @@ class Model:
 
     def parallel(self, model, device_ids):
         if len(device_ids) > 1:
-            return nn.DataParallel(model, device_ids=list(range(len(device_ids)))).cuda()
+            return model.cpu()
+            # return nn.DataParallel(model, device_ids=list(range(len(device_ids)))).cuda()
         else:
-            return model.cuda()
+            return model.cpu()
 
     @torch.no_grad()
     def predict(self, data: torch.tensor, target: torch.tensor):
@@ -853,7 +855,7 @@ class Model:
         torch.save(self.model.state_dict(), name)
 
     def load(self, name):
-        self.model.load_state_dict(torch.load(name))
+        self.model.load_state_dict(torch.load(name, map_location=torch.device('cpu')))
 
     def __getitem__(self, size):
         return self.dataset[size]
@@ -864,7 +866,7 @@ class Model:
     def gc(self):
         collected = gc.collect()
         self.print(f"Garbage collector: collected {collected} objects.")
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         self.interrupt = False
 
     def device(self):

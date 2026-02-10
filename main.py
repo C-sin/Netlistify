@@ -564,7 +564,7 @@ def criterion(y_hat, y):
 
 from torchmetrics.classification import BinaryAccuracy
 
-accuracy_metric = BinaryAccuracy().to("cuda")
+accuracy_metric = BinaryAccuracy().to("cpu")
 
 
 def eval_metrics(criterion, y_hat, y):

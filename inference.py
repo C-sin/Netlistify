@@ -7,14 +7,28 @@ import torchvision.transforms.v2 as transforms
 from PIL import Image
 from shapely.geometry import box, point
 
+from netlistify_export import export_json
+
+import json
+from pathlib import Path
+from util import cut_box
+
 from slice import *
 from testing import *
 from util import *
 from utility import *
 
 config_flag = False
-device_name = "cuda"
+device_name = "cpu"
 device = torch.device(device_name)
+
+# 加载权重时的 map_location 也会跟着用 CPU
+model_orientation = torch.load(
+    "bubble_orientation/res50_1.pt", weights_only=False, map_location=device_name
+)
+model_bubble = torch.load(
+    "bubble_orientation/cc_res50_1.pt", weights_only=False, map_location=device_name
+)
 
 # Load the model
 if config_flag:
@@ -116,31 +130,69 @@ comp_table = {
 
 
 def write_sp(filename, comps, path):
-    file_path = path + filename + ".sp"
+    file_path = Path(path) / f"{filename}.sp"
     print("write to:", file_path)
-    with open(file_path, "w") as f:
+    with open(file_path, "w", encoding="utf-8") as f:
         f.write("\n")
-        f.write(".subckt " + filename + "\n")
-        for i in comps:
-            if comps[i].type == "gnd":
-                pass
-            elif comps[i].type in ["or", "xor", "and"]:
-                f.write(i + " ")
-                for j in comps[i].pin:
+        f.write(f".subckt {filename}\n")
+
+        # 在子电路头部写一段坐标索引的注释块
+        f.write("* === component bounding boxes (pixel coords) ===\n")
+        for name, c in comps.items():
+            x1, y1, x2, y2 = c.pos
+            f.write(f"* {name} type={c.type} bbox=({x1},{y1},{x2},{y2}) orientation={c.orientation}\n")
+            # 可选：写每个引脚的小框坐标
+            rects = cut_box(False, c.type, c.pos, c.orientation)
+            for p_idx, r in enumerate(rects):
+                rx1, ry1, rx2, ry2 = r
+                f.write(f"*   pin{p_idx}_rect=({rx1},{ry1},{rx2},{ry2})\n")
+
+        # 正式的 netlist 元件行
+        for name, c in comps.items():
+            if c.type == "gnd":
+                continue
+            elif c.type in ["or", "xor", "and"]:
+                f.write(name + " ")
+                for j in c.pin:
                     f.write(j + " ")
-                if comps[i].bubble is not None and comps[i].bubble == 0:
-                    f.write("n" + comps[i].type + str(len(comps[i].pin) - 1))
+                if c.bubble is not None and c.bubble == 0:
+                    f.write("n" + c.type + str(len(c.pin) - 1))
                 else:
-                    f.write(comps[i].type + str(len(comps[i].pin) - 1))
+                    f.write(c.type + str(len(c.pin) - 1))
                 f.write("\n")
             else:
-                f.write(i + " ")
-                for j in comps[i].pin:
+                f.write(name + " ")
+                for j in c.pin:
                     f.write(j + " ")
-                f.write(comp_table[comps[i].type])
+                from inference import comp_table 
+                f.write(comp_table[c.type])
                 f.write("\n")
+
         f.write(".ends\n")
 
+def write_component_meta(filename, comps, path):
+    meta = []
+    for name, c in comps.items():
+        entry = {
+            "name": name,
+            "type": c.type,
+            "bbox": {"x1": c.pos[0], "y1": c.pos[1], "x2": c.pos[2], "y2": c.pos[3]},
+            "orientation": c.orientation,
+            "bubble": c.bubble,
+            "pins": []
+        }
+        rects = cut_box(False, c.type, c.pos, c.orientation)
+        for idx, r in enumerate(rects):
+            entry["pins"].append({
+                "index": idx,
+                "rect": {"x1": r[0], "y1": r[1], "x2": r[2], "y2": r[3]}
+            })
+        meta.append(entry)
+
+    out_path = Path(path) / f"{filename}_meta.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
+    print("write meta to:", out_path)
 
 transform = transforms.Compose(
     [
@@ -414,6 +466,8 @@ def inference(img_path, output_folder):
                             net_cnt += 1
     comps = gnd_transfer(comps)
     write_sp(filename + "_output", comps, output_folder)
+    write_component_meta(filename + "_output", comps, output_folder)
+    export_json(filename + "_output", comps, connection_dict, output_folder)
     return comps
 
 
